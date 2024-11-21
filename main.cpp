@@ -17,11 +17,54 @@ std::vector<std::vector<int>> createSequences(const std::vector<std::string> &to
     for (size_t i = 0; i <= tokens.size() - seqLength; ++i) {
         std::vector<int> seq;
         for (size_t j = 0; j < seqLength; ++j) {
-            seq.push_back(vocab.at(tokens[i + j]));
+            auto it = vocab.find(tokens[i + j]);
+            if (it != vocab.end()) {
+                seq.push_back(it->second);
+            } else {
+                // Handle unknown token
+                seq.push_back(vocab.at("<UNK>")); // Assuming <UNK> is in the vocabulary for unknown tokens
+            }
         }
         sequences.push_back(seq);
     }
     return sequences;
+}
+
+std::vector<double> softmax(const std::vector<double>& logits) {
+    std::vector<double> exp_values(logits.size());
+    double max_logit = *max_element(logits.begin(), logits.end());
+    double sum_exp = 0.0;
+    for (size_t i = 0; i < logits.size(); ++i) {
+        exp_values[i] = exp(logits[i] - max_logit);
+        sum_exp += exp_values[i];
+    }
+    for (size_t i = 0; i < exp_values.size(); ++i) {
+        exp_values[i] /= sum_exp;
+    }
+    return exp_values;
+}
+
+int sampleFromDistribution(const std::vector<double>& distribution) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::discrete_distribution<> dist(distribution.begin(), distribution.end());
+    return dist(gen);
+}
+
+int findNearestToken(double value, const std::unordered_map<int, std::string>& reverseVocab, double threshold) {
+    int nearestToken = -1;
+    double minDistance = std::numeric_limits<double>::max();
+    for (const auto& pair : reverseVocab) {
+        double distance = std::abs(value - pair.first);
+        if (distance < minDistance) {
+            minDistance = distance;
+            nearestToken = pair.first;
+        }
+    }
+    if (minDistance > threshold) {
+        return -1; // Indicate that the nearest token is too far
+    }
+    return nearestToken;
 }
 
 int main() {
@@ -37,7 +80,7 @@ int main() {
     auto sequences = createSequences(tokens, seqLength, vocab);
 
     // Initialize the transformer model
-    int modelDim = 32, numHeads = 6, ffDim = 128, numLayers = 3;
+    int modelDim = 64, numHeads = 12, ffDim = 256, numLayers = 6;
     TransformerEncoder encoder(numLayers, modelDim, numHeads, ffDim);
 
     // Example input for the transformer
@@ -59,24 +102,48 @@ int main() {
     // Generate text using the trained model
     std::vector<int> seed;
     for (const auto &token : tokens) {
-        seed.push_back(vocab[token]);
+        auto it = vocab.find(token);
+        if (it != vocab.end()) {
+            seed.push_back(it->second);
+        } else {
+            // Handle unknown token
+            seed.push_back(vocab.at("<UNK>")); // Assuming <UNK> is in the vocabulary for unknown tokens
+        }
     }
     int length = 10;
 
-    // std::string generatedText = generateText(encoder, seed, 10, reverseVocab);
     std::vector<int> inputvector = seed;
     std::string result;
+    double threshold = 2;
+
     for (int i = 0; i < length; ++i) {
         Matrix inputMatrix(inputvector.size(), 1);
         for (size_t j = 0; j < inputvector.size(); ++j) {
             inputMatrix(j, 0) = inputvector[j];
         }
         Matrix outputMatrix = encoder.forward(inputMatrix);
-        int nextToken = static_cast<int>(outputMatrix(outputMatrix.rows() - 1, 0)); // Simplified for example
+
+        // Apply softmax to the last row of the output matrix
+        std::vector<double> logits(outputMatrix.cols());
+        for (int j = 0; j < outputMatrix.cols(); ++j) {
+            logits[j] = outputMatrix(outputMatrix.rows() - 1, j);
+        }
+        std::vector<double> probabilities = softmax(logits);
+
+        // Sample the next token from the probability distribution
+        int nextToken = sampleFromDistribution(probabilities);
         inputvector.push_back(nextToken);
-        result += reverseVocab.at(nextToken) + " ";
+
+        // Find the nearest token in reverseVocab
+        int nearestToken = findNearestToken(nextToken, reverseVocab, threshold);
+        if (nearestToken != -1) {
+            result += reverseVocab.at(nearestToken) + " ";
+        } else {
+            // Handle unknown token
+            result += "<UNK> ";
+        }
     }
 
     std::string generatedText = result;
-    std::cout << "Generated Text: " << generatedText << std::endl;
+    std::cout << text << " " << generatedText << std::endl;
 }
